@@ -8,20 +8,18 @@ import random
 from datetime import datetime
 import time
 
-# Load environment
-load_dotenv()
 
 # Initialize Redis connection (without singleton)
 
 
 def init_redis():
     return redis.Redis(
-        host=os.getenv("REDIS_PUBLIC_ENDPOINT"),
-        port=os.getenv("REDIS_PORT"),
+        host=st.secrets["REDIS_PUBLIC_ENDPOINT"],
+        port=st.secrets["REDIS_PORT"],
         # Add this if your Redis requires a username
-        username=os.getenv("REDIS_USERNAME"),
+        username=st.secrets["REDIS_USERNAME"],
         # Add this if your Redis requires a password
-        password=os.getenv("REDIS_PASSWORD"),
+        password=st.secrets["REDIS_PASSWORD"],
         decode_responses=True
     )
 
@@ -34,7 +32,7 @@ except Exception as e:
     st.stop()
 
 # Initialize OpenAI client
-ai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+ai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 # --- Constants ---
 USER_CHAT_CHANNEL = "user_chat"
@@ -129,10 +127,10 @@ def main():
 
         def add_bot_arena_message(sender, text):
             msg_data = {
-            "sender": sender,
-            "text": text,
-            "is_bot": True,
-            "timestamp": str(datetime.now())
+                "sender": sender,
+                "text": text,
+                "is_bot": True,
+                "timestamp": str(datetime.now())
             }
             redis_client.rpush(BOT_ARENA_HISTORY_KEY, json.dumps(msg_data))
             redis_client.ltrim(BOT_ARENA_HISTORY_KEY, -BOT_ARENA_MAX_MSGS, -1)
