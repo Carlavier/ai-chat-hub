@@ -13,15 +13,20 @@ import time
 
 
 def init_redis():
-    return redis.Redis(
-        host=st.secrets["REDIS_PUBLIC_ENDPOINT"],
-        port=st.secrets["REDIS_PORT"],
-        # Add this if your Redis requires a username
-        username=st.secrets["REDIS_USERNAME"],
-        # Add this if your Redis requires a password
-        password=st.secrets["REDIS_PASSWORD"],
-        decode_responses=True
-    )
+    if st.secrets["ENV"] == "production":
+        return redis.Redis(
+            host=st.secrets["REDIS_PUBLIC_ENDPOINT"],
+            port=st.secrets["REDIS_PORT"],
+            username=st.secrets["REDIS_USERNAME"],
+            password=st.secrets["REDIS_PASSWORD"],
+            decode_responses=True
+        )
+    else:
+        return redis.Redis(
+            host="localhost",
+            port=6379,
+            decode_responses=True
+        )
 
 
 try:
@@ -41,14 +46,19 @@ USER_EXPIRE_SECONDS = 30
 # --- Bot Configuration ---
 BOT_PROFILES = {
     "Jester": {
-        "system_prompt": "You are a witty comedian bot. Respond with humor and jokes. Keep responses under 2 sentences. Never be serious. Never break character.",
+        "system_prompt": "You are a witty comedian bot. Respond with humor and jokes. Keep responses under 2 sentences. Never be serious. Never break character. never say anything that is not related to humor.",
         "avatar": "🤡",
         "temperature": 1.0
     },
     "Philosopher": {
-        "system_prompt": "You are a hardcore philosopher. You want to find the pattern hiding in the chaos. Use formal language. Never use contractions. Keep responses under 3 sentences. Never break character.",
+        "system_prompt": "You are a hardcore philosopher. You want to find the pattern hiding in the chaos. Use formal language. Never use contractions. Keep responses under 3 sentences. Never break character. Never say anything that is not related to philosophy.",
         "avatar": "🎓",
         "temperature": 0.3
+    },
+    "Detective": {
+        "system_prompt": "You are a sharp detective. Respond with keen observations and logical deductions. Always look for clues and ask probing questions. Keep responses under 3 sentences. Never break character. Never say anything that is not related to investigation.",
+        "avatar": "🕵️‍♂️",
+        "temperature": 0.6
     }
 }
 
@@ -85,7 +95,7 @@ def main():
     if "user" not in st.session_state:
         st.session_state.user = f"User_{random.randint(1000, 9999)}"
 
-    tab1, tab2 = st.tabs(["Real-Time User Chat", "Bot Arena"])
+    tab1, tab2, tab3 = st.tabs(["Real-Time User Chat", "Bot Arena", "User & Multi-Bot Chat"])
 
     # --- Tab 1: Real-Time User Chat ---
     with tab1:
@@ -181,6 +191,136 @@ def main():
             with st.chat_message(msg["sender"], avatar=avatar):
                 st.write(msg["text"])
                 st.caption(msg["timestamp"])
+
+    # --- Tab 3: User & Multi-Bot Chat ---
+    with tab3:
+        st.subheader("👥🤖 User & Multi-Bot Chat")
+
+        # --- Multi-bot chat config ---
+        MULTIBOT_HISTORY_KEY = "multibot_history:all"
+        MULTIBOT_MAX_TURNS = 20
+        MULTIBOT_BOTS = [
+            {"name": name, "profile": profile}
+            for name, profile in BOT_PROFILES.items()
+        ]
+
+        def get_multibot_history():
+            history = redis_client.lrange(MULTIBOT_HISTORY_KEY, 0, -1)
+            return [json.loads(item) for item in history if item]
+
+        def save_multibot_message(msg):
+            redis_client.rpush(MULTIBOT_HISTORY_KEY, json.dumps(msg))
+            # Keep only the last N*2+2 messages (system + N turns)
+            redis_client.ltrim(MULTIBOT_HISTORY_KEY, -((MULTIBOT_MAX_TURNS*2)+2), -1)
+
+        def trim_history(history, max_msgs=20):
+            return history[-max_msgs:] if len(history) > max_msgs else history
+
+        # --- System prompt for multi-bot chat ---
+        SYSTEM_PROMPT = (
+            "You are a chat platform supporting multiple AI bots: "
+            + ", ".join(BOT_PROFILES.keys())
+            + ". Each bot must remember the entire conversation history and only reply when called."
+        )
+
+        # --- UI: select bot or auto-turn ---
+        bot_names = [bot["name"] for bot in MULTIBOT_BOTS]
+        selected_bot = st.selectbox(
+            "Choose a bot to reply (or select Auto for bots to take turns):",
+            options=["Auto"] + bot_names,
+            index=0
+        )
+        user_input = st.chat_input("Enter your message for the bots...")
+
+        # Fetch all messages from redis (shared history)
+        multibot_history = get_multibot_history()
+        if not multibot_history:
+            # First time: add system + first bot welcome
+            save_multibot_message({"role": "system", "content": SYSTEM_PROMPT})
+            first_bot = MULTIBOT_BOTS[0]
+            save_multibot_message({
+                "role": "assistant",
+                "bot": first_bot["name"],
+                "content": f"Hello! I'm {first_bot['name']}. Do you know why I'm never sad? Because I always have a joke to laugh at! 😄 How can I help you today?"
+            })
+            # After adding, reload the history
+            multibot_history = get_multibot_history()
+
+        # Show full chat history (newest at top)
+        for msg in reversed(multibot_history):
+            if msg["role"] == "system":
+                continue  # skip system in UI
+            if msg["role"] == "user":
+                with st.chat_message("User"):
+                    st.write(msg["content"])
+            elif msg["role"] == "assistant":
+                bot_name = msg.get("bot", "Bot")
+                avatar = BOT_PROFILES.get(bot_name, {}).get("avatar", "🤖")
+                with st.chat_message(bot_name, avatar=avatar):
+                    st.write(msg["content"])
+
+        # --- Handle user input ---
+        if user_input:
+            # 1. Add user message to history (redis)
+            save_multibot_message({"role": "user", "content": user_input})
+            multibot_history = get_multibot_history()
+
+            # 2. Decide which bot(s) should reply
+            if selected_bot == "Auto":
+                # Alternate bots: find last bot, pick next in BOT_PROFILES order
+                last_bot = None
+                for msg in reversed(multibot_history):
+                    if msg.get("role") == "assistant":
+                        last_bot = msg.get("bot")
+                        break
+                bot_order = [bot["name"] for bot in MULTIBOT_BOTS]
+                if last_bot and last_bot in bot_order:
+                    idx = (bot_order.index(last_bot) + 1) % len(bot_order)
+                else:
+                    idx = 0
+                bot_to_reply = [MULTIBOT_BOTS[idx]]
+            else:
+                # Only selected bot replies
+                bot_to_reply = [bot for bot in MULTIBOT_BOTS if bot["name"] == selected_bot]
+
+            # 3. For the chosen bot, generate reply and append (feed last 20 messages)
+            for bot in bot_to_reply:
+                trimmed = trim_history(multibot_history, 20)
+                messages = []
+                for m in trimmed:
+                    if m["role"] == "assistant":
+                        messages.append({
+                            "role": "assistant",
+                            "content": m["content"],
+                            "name": m.get("bot", "")
+                        })
+                    else:
+                        messages.append({
+                            "role": m["role"],
+                            "content": m["content"]
+                        })
+                # Add system instruction for this bot's turn
+                messages.append({
+                    "role": "system",
+                    "content": f"It is now {bot['name']}'s turn, please reply based on the conversation history above."
+                })
+                try:
+                    response = ai_client.chat.completions.create(
+                        model="gpt-3.5-turbo",
+                        messages=messages,
+                        temperature=bot["profile"]["temperature"],
+                        max_tokens=120,
+                    )
+                    bot_reply = response.choices[0].message.content.strip()
+                except Exception as e:
+                    bot_reply = f"(Error: {e})"
+                # Save bot answer to redis
+                save_multibot_message({
+                    "role": "assistant",
+                    "bot": bot["name"],
+                    "content": bot_reply
+                })
+            st.rerun()
 
     # Auto-refresh every 2 seconds
     time.sleep(2)
