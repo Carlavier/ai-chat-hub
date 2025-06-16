@@ -8,6 +8,9 @@ import random
 from datetime import datetime
 import time
 
+from bot_profiles import BOT_PROFILES
+from constants import BOT_ARENA_HISTORY_KEY, BOT_ARENA_MAX_MSGS, MULTIBOT_HISTORY_KEY, MULTIBOT_MAX_TURNS, USER_EXPIRE_SECONDS
+
 
 # Initialize Redis connection (without singleton)
 
@@ -38,29 +41,6 @@ except Exception as e:
 
 # Initialize OpenAI client
 ai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-
-# --- Constants ---
-USER_CHAT_CHANNEL = "user_chat"
-USER_EXPIRE_SECONDS = 30
-
-# --- Bot Configuration ---
-BOT_PROFILES = {
-    "Jester": {
-        "system_prompt": "You are a witty comedian bot. Respond with humor and jokes. Keep responses under 2 sentences. Never be serious. Never break character. never say anything that is not related to humor.",
-        "avatar": "🤡",
-        "temperature": 1.0
-    },
-    "Philosopher": {
-        "system_prompt": "You are a hardcore philosopher. You want to find the pattern hiding in the chaos. Use formal language. Never use contractions. Keep responses under 3 sentences. Never break character. Never say anything that is not related to philosophy.",
-        "avatar": "🎓",
-        "temperature": 0.3
-    },
-    "Detective": {
-        "system_prompt": "You are a sharp detective. Respond with keen observations and logical deductions. Always look for clues and ask probing questions. Keep responses under 3 sentences. Never break character. Never say anything that is not related to investigation.",
-        "avatar": "🕵️‍♂️",
-        "temperature": 0.6
-    }
-}
 
 # --- Helper Functions ---
 
@@ -127,10 +107,6 @@ def main():
         bot_names = list(BOT_PROFILES.keys())
         bot1, bot2 = bot_names[0], bot_names[1]
 
-        # Redis key for bot arena chat
-        BOT_ARENA_HISTORY_KEY = "bot_arena_history"
-        BOT_ARENA_MAX_MSGS = 30
-
         def get_bot_arena_history():
             history = redis_client.lrange(BOT_ARENA_HISTORY_KEY, 0, -1)
             return [json.loads(item) for item in history if item]
@@ -196,9 +172,6 @@ def main():
     with tab3:
         st.subheader("👥🤖 User & Multi-Bot Chat")
 
-        # --- Multi-bot chat config ---
-        MULTIBOT_HISTORY_KEY = "multibot_history:all"
-        MULTIBOT_MAX_TURNS = 20
         MULTIBOT_BOTS = [
             {"name": name, "profile": profile}
             for name, profile in BOT_PROFILES.items()
@@ -302,14 +275,14 @@ def main():
                 # Add system instruction for this bot's turn
                 messages.append({
                     "role": "system",
-                    "content": f"It is now {bot['name']}'s turn, please reply based on the conversation history above."
+                    "content": f"It is now {bot['name']}'s turn, the bot have this personalities {bot['profile']['system_prompt']}, please reply based on the conversation history above."
                 })
                 try:
                     response = ai_client.chat.completions.create(
                         model="gpt-3.5-turbo",
                         messages=messages,
                         temperature=bot["profile"]["temperature"],
-                        max_tokens=120,
+                        max_tokens=250,
                     )
                     bot_reply = response.choices[0].message.content.strip()
                 except Exception as e:
